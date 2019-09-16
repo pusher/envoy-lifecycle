@@ -60,11 +60,7 @@ func main() {
 	}
 	logger.Infof("Configuration: %+v", config)
 
-	if config.EnvoyWaitUntilLive {
-		logger.Info("Checking Envoy is LIVE")
-		config.CheckLive(logger)
-	}
-
+	config.CheckLive(logger)
 	config.CheckXDSSuccess(logger)
 
 	logger.Info("Checks successful. Handing over to entrypoint")
@@ -82,6 +78,12 @@ type ServerInfo struct {
 }
 
 func (config *Config) CheckLive(logger *logrus.Logger) {
+	if !config.EnvoyWaitUntilLive {
+		return
+	}
+
+	logger.Info("Checking Envoy is LIVE")
+
 	var serverInfo = ServerInfo{}
 	var err error
 	var resp *http.Response
