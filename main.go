@@ -204,11 +204,9 @@ func (config *Config) StartEntrypoint() (*os.Process, error) {
 
 // Run the entrypoint, passing down any signals
 func (config *Config) Run(logger *logrus.Logger) (*int, error) {
-	var process *os.Process
-
+	process, err := config.StartEntrypoint()
 	go ForwardSignals(logger, process)
 
-	process, err := config.StartEntrypoint()
 	if err != nil {
 		return nil, errors.New("Failed to start entrypoint")
 	}
