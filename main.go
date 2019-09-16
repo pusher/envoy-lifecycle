@@ -120,49 +120,36 @@ func Retry(logger *logrus.Logger, f func() error) {
 	}
 }
 
-type Stats struct {
-	CDSUpdatedSuccessfully bool
-	LDSUpdatedSuccessfully bool
-}
+var cdsRegex = regexp.MustCompile(`cluster_manager\.cds\.update_success: (\d+)`)
+var ldsRegex = regexp.MustCompile(`listener_manager\.lds\.update_success: (\d+)`)
 
-var cdsRegex = regexp.MustCompile(`cluster_manager\.cds\.update_success: (\d)`)
-var ldsRegex = regexp.MustCompile(`listener_manager\.lds\.update_success: (\d)`)
-
-func ParseStats(bs []byte) (*Stats, error) {
-	cdsMatch := cdsRegex.FindSubmatch(bs)
-	if len(cdsMatch) != 2 {
-		return nil, errors.New("could not match cds update success")
+func hasUpdateSuccess(bs []byte, regex *regexp.Regexp) error {
+	match := regex.FindSubmatch(bs)
+	if len(match) != 2 {
+		return errors.New("could not match update success")
 	}
-	cds, err := strconv.Atoi(string(cdsMatch[1]))
+	val, err := strconv.Atoi(string(match[1]))
+
 	if err != nil {
-		return nil, errors.New("could not parse cds update success as int")
+		return errors.New("could not parse update success as int")
 	}
 
-	ldsMatch := ldsRegex.FindSubmatch(bs)
-	if len(ldsMatch) != 2 {
-		return nil, errors.New("could not match lds update success")
-	}
-	lds, err := strconv.Atoi(string(ldsMatch[1]))
-	if err != nil {
-		return nil, errors.New("could not parse lds update success as int")
+	if val <= 0 {
+		return errors.New("no push success received")
 	}
 
-	return &Stats{
-		CDSUpdatedSuccessfully: 0 < cds,
-		LDSUpdatedSuccessfully: 0 < lds,
-	}, nil
+	return nil
 }
 
 func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
-	var err error
-	var stats = &Stats{}
-	var body []byte
-	var resp *http.Response
-	statsUrl := fmt.Sprintf("%s:%v/stats", config.EnvoyHost, config.EnvoyPort)
-
 	if !config.EnvoyWaitForCDSPush && !config.EnvoyWaitForLDSPush {
 		return
 	}
+
+	var err error
+	var body []byte
+	var resp *http.Response
+	statsUrl := fmt.Sprintf("%s:%v/stats", config.EnvoyHost, config.EnvoyPort)
 
 	Retry(logger, func() error {
 		resp, err = http.Get(statsUrl)
@@ -176,17 +163,16 @@ func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
 			return errors.Wrap(err, "Failed to read response body")
 		}
 
-		stats, err = ParseStats(body)
-		if err != nil {
-			return errors.Wrap(err, "Failed to parse response body")
+		if config.EnvoyWaitForLDSPush {
+			if err := hasUpdateSuccess(body, ldsRegex); err != nil {
+				return errors.Wrap(err, "Envoy LDS unsuccessful")
+			}
 		}
 
-		if config.EnvoyWaitForLDSPush && !stats.LDSUpdatedSuccessfully {
-			return errors.New(fmt.Sprintf("Envoy has not successfully received a LDS push yet: %+v", stats))
-		}
-
-		if config.EnvoyWaitForCDSPush && !stats.CDSUpdatedSuccessfully {
-			return errors.New(fmt.Sprintf("Envoy has not successfully received a CDS push yet: %+v", stats))
+		if config.EnvoyWaitForCDSPush {
+			if err := hasUpdateSuccess(body, cdsRegex); err != nil {
+				return errors.Wrap(err, "Envoy CDS unsuccessful")
+			}
 		}
 
 		return nil
