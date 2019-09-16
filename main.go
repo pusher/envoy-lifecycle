@@ -60,11 +60,7 @@ func main() {
 	}
 	logger.Infof("Configuration: %+v", config)
 
-	if config.EnvoyWaitUntilLive {
-		logger.Info("Checking Envoy is LIVE")
-		config.CheckLive(logger)
-	}
-
+	config.CheckLive(logger)
 	config.CheckXDSSuccess(logger)
 
 	logger.Info("Checks successful. Handing over to entrypoint")
@@ -82,9 +78,14 @@ type ServerInfo struct {
 }
 
 func (config *Config) CheckLive(logger *logrus.Logger) {
+	if !config.EnvoyWaitUntilLive {
+		return
+	}
+
+	logger.Info("Checking Envoy is LIVE")
+
 	var serverInfo = ServerInfo{}
 	var err error
-	var body []byte
 	var resp *http.Response
 	infoUrl := fmt.Sprintf("%s:%v/server_info", config.EnvoyHost, config.EnvoyPort)
 
@@ -94,12 +95,8 @@ func (config *Config) CheckLive(logger *logrus.Logger) {
 			return errors.Wrap(err, "Envoy cannot be reached")
 		}
 
-		body, err = ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return errors.Wrap(err, "Failed to read response body")
-		}
-
-		err = json.Unmarshal(body, &serverInfo)
+		defer resp.Body.Close()
+		err = json.NewDecoder(resp.Body).Decode(&serverInfo)
 		if err != nil {
 			return errors.Wrap(err, "Failed to unmarshal response body")
 		}
@@ -125,49 +122,36 @@ func Retry(logger *logrus.Logger, f func() error) {
 	}
 }
 
-type Stats struct {
-	CDSUpdatedSuccessfully bool
-	LDSUpdatedSuccessfully bool
-}
+var cdsRegex = regexp.MustCompile(`cluster_manager\.cds\.update_success: (\d+)`)
+var ldsRegex = regexp.MustCompile(`listener_manager\.lds\.update_success: (\d+)`)
 
-var cdsRegex = regexp.MustCompile(`cluster_manager\.cds\.update_success: (\d)`)
-var ldsRegex = regexp.MustCompile(`listener_manager\.lds\.update_success: (\d)`)
-
-func ParseStats(bs []byte) (*Stats, error) {
-	cdsMatch := cdsRegex.FindSubmatch(bs)
-	if len(cdsMatch) != 2 {
-		return nil, errors.New("could not match cds update success")
+func hasUpdateSuccess(bs []byte, regex *regexp.Regexp) error {
+	match := regex.FindSubmatch(bs)
+	if len(match) != 2 {
+		return errors.New("could not match update success")
 	}
-	cds, err := strconv.Atoi(string(cdsMatch[1]))
+	val, err := strconv.Atoi(string(match[1]))
+
 	if err != nil {
-		return nil, errors.New("could not parse cds update success as int")
+		return errors.New("could not parse update success as int")
 	}
 
-	ldsMatch := ldsRegex.FindSubmatch(bs)
-	if len(ldsMatch) != 2 {
-		return nil, errors.New("could not match lds update success")
-	}
-	lds, err := strconv.Atoi(string(ldsMatch[1]))
-	if err != nil {
-		return nil, errors.New("could not parse lds update success as int")
+	if val <= 0 {
+		return errors.New("no push success received")
 	}
 
-	return &Stats{
-		CDSUpdatedSuccessfully: 0 < cds,
-		LDSUpdatedSuccessfully: 0 < lds,
-	}, nil
+	return nil
 }
 
 func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
-	var err error
-	var stats = &Stats{}
-	var body []byte
-	var resp *http.Response
-	statsUrl := fmt.Sprintf("%s:%v/stats", config.EnvoyHost, config.EnvoyPort)
-
 	if !config.EnvoyWaitForCDSPush && !config.EnvoyWaitForLDSPush {
 		return
 	}
+
+	var err error
+	var body []byte
+	var resp *http.Response
+	statsUrl := fmt.Sprintf("%s:%v/stats", config.EnvoyHost, config.EnvoyPort)
 
 	Retry(logger, func() error {
 		resp, err = http.Get(statsUrl)
@@ -175,22 +159,22 @@ func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
 			return errors.Wrap(err, "Envoy cannot be reached")
 		}
 
+		defer resp.Body.Close()
 		body, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return errors.Wrap(err, "Failed to read response body")
 		}
 
-		stats, err = ParseStats(body)
-		if err != nil {
-			return errors.Wrap(err, "Failed to parse response body")
+		if config.EnvoyWaitForLDSPush {
+			if err := hasUpdateSuccess(body, ldsRegex); err != nil {
+				return errors.Wrap(err, "Envoy LDS unsuccessful")
+			}
 		}
 
-		if config.EnvoyWaitForLDSPush && !stats.LDSUpdatedSuccessfully {
-			return errors.New(fmt.Sprintf("Envoy has not successfully received a LDS push yet: %+v", stats))
-		}
-
-		if config.EnvoyWaitForCDSPush && !stats.CDSUpdatedSuccessfully {
-			return errors.New(fmt.Sprintf("Envoy has not successfully received a CDS push yet: %+v", stats))
+		if config.EnvoyWaitForCDSPush {
+			if err := hasUpdateSuccess(body, cdsRegex); err != nil {
+				return errors.Wrap(err, "Envoy CDS unsuccessful")
+			}
 		}
 
 		return nil
@@ -203,23 +187,19 @@ func ForwardSignals(logger *logrus.Logger, process *os.Process) {
 	signal.Notify(stop)
 	for sig := range stop {
 		if process == nil {
-			logger.Fatal("%v signal received but the entrypoint has not started")
+			logger.Fatalf("%v signal received but the entrypoint has not started", sig)
 		}
 
-		process.Signal(sig)
+		if err := process.Signal(sig); err != nil {
+			logger.Fatalf("Failed to forward signal %v: %v", sig, err)
+		}
 	}
 }
 
 func (config *Config) StartEntrypoint() (*os.Process, error) {
-	process, err := os.StartProcess(config.EntryPoint, os.Args[1:], &os.ProcAttr{
+	return os.StartProcess(config.EntryPoint, os.Args[1:], &os.ProcAttr{
 		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return process, nil
 }
 
 // Run the entrypoint, passing down any signals
