@@ -84,7 +84,6 @@ type ServerInfo struct {
 func (config *Config) CheckLive(logger *logrus.Logger) {
 	var serverInfo = ServerInfo{}
 	var err error
-	var body []byte
 	var resp *http.Response
 	infoUrl := fmt.Sprintf("%s:%v/server_info", config.EnvoyHost, config.EnvoyPort)
 
@@ -95,12 +94,7 @@ func (config *Config) CheckLive(logger *logrus.Logger) {
 		}
 
 		defer resp.Body.Close()
-		body, err = ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return errors.Wrap(err, "Failed to read response body")
-		}
-
-		err = json.Unmarshal(body, &serverInfo)
+		err = json.NewDecoder(resp.Body).Decode(&serverInfo)
 		if err != nil {
 			return errors.Wrap(err, "Failed to unmarshal response body")
 		}
