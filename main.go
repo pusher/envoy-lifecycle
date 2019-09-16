@@ -195,15 +195,9 @@ func ForwardSignals(logger *logrus.Logger, process *os.Process) {
 }
 
 func (config *Config) StartEntrypoint() (*os.Process, error) {
-	process, err := os.StartProcess(config.EntryPoint, os.Args[1:], &os.ProcAttr{
+	return os.StartProcess(config.EntryPoint, os.Args[1:], &os.ProcAttr{
 		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return process, nil
 }
 
 // Run the entrypoint, passing down any signals
