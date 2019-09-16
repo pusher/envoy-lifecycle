@@ -94,6 +94,7 @@ func (config *Config) CheckLive(logger *logrus.Logger) {
 			return errors.Wrap(err, "Envoy cannot be reached")
 		}
 
+		defer resp.Body.Close()
 		body, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return errors.Wrap(err, "Failed to read response body")
@@ -175,6 +176,7 @@ func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
 			return errors.Wrap(err, "Envoy cannot be reached")
 		}
 
+		defer resp.Body.Close()
 		body, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return errors.Wrap(err, "Failed to read response body")
