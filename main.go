@@ -185,10 +185,12 @@ func ForwardSignals(logger *logrus.Logger, process *os.Process) {
 	signal.Notify(stop)
 	for sig := range stop {
 		if process == nil {
-			logger.Fatal("%v signal received but the entrypoint has not started")
+			logger.Fatalf("%v signal received but the entrypoint has not started", sig)
 		}
 
-		process.Signal(sig)
+		if err := process.Signal(sig); err != nil {
+			logger.Fatalf("Failed to forward signal %v: %v", sig, err)
+		}
 	}
 }
 
