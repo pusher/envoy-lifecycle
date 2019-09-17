@@ -70,7 +70,6 @@ func main() {
 		logger.WithError(err).Fatal("Failed to execute entrypoint")
 	}
 
-	logger.Infof("Entrypoint exited with status code: %v", *exitCode)
 	os.Exit(*exitCode)
 }
 
