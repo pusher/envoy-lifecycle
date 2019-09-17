@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/joeshaw/envdecode"
@@ -69,7 +70,6 @@ func main() {
 		logger.WithError(err).Fatal("Failed to execute entrypoint")
 	}
 
-	logger.Infof("Entrypoint exited with status code: %v", *exitCode)
 	os.Exit(*exitCode)
 }
 
@@ -181,13 +181,16 @@ func (config *Config) CheckXDSSuccess(logger *logrus.Logger) {
 	})
 }
 
-// ForwardSignals listens for all OS signals and forwards them to the process
+// ForwardSignals listens for OS signals and forwards those that are appropriate.
 func ForwardSignals(logger *logrus.Logger, process *os.Process) {
 	stop := make(chan os.Signal, 2)
 	signal.Notify(stop)
+
 	for sig := range stop {
-		if process == nil {
-			logger.Fatalf("%v signal received but the entrypoint has not started", sig)
+
+		// It's not a sub-processes concern that a themselves or a sibling has been killed
+		if sig == syscall.SIGCHLD {
+			continue
 		}
 
 		if err := process.Signal(sig); err != nil {
@@ -204,11 +207,8 @@ func (config *Config) StartEntrypoint() (*os.Process, error) {
 
 // Run the entrypoint, passing down any signals
 func (config *Config) Run(logger *logrus.Logger) (*int, error) {
-	var process *os.Process
-
-	go ForwardSignals(logger, process)
-
 	process, err := config.StartEntrypoint()
+	go ForwardSignals(logger, process)
 	if err != nil {
 		return nil, errors.New("Failed to start entrypoint")
 	}
